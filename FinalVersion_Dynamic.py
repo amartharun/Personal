@@ -21,7 +21,7 @@ class InvoiceItem(BaseModel):
 
 class TallyInvoiceSchema(BaseModel):
     invoice_no: str = Field(description="Unique Tax Invoice Number (e.g., E/SUR-10109)")
-    invoice_date: str = Field(description="Date of invoice converted to YYYY-MM-DD format")
+    invoice_date: str = Field(description="Date of invoice converted to DD-MM-YYYY format")
     party_ledger_name: str = Field(description="The seller/supplier business name (e.g., KISHORE FABRICS PVT LTD)")
     supplier_address: str = Field(description="Full physical address of the supplier/seller as a single string line")
     supplier_pincode: str = Field(description="Extract the 6-digit postal pincode from the supplier address block (e.g., 522501)")
@@ -64,22 +64,48 @@ def extract_and_convert_to_exact_tally_format(image_path: str, target_folder: st
     extracted_data = json.loads(response.text)
     compiled_rows = []
     
-    # Process items using enumeration to know which row is the first one
-    for index, item in enumerate(extracted_data.get("line_items", [])):
-        
-        # Calculate row-specific individual taxes dynamically based strictly on raw product values
+    line_items = extracted_data.get("line_items", [])
+    total_items_count = len(line_items)
+    
+    # Extract structural totals directly from the validated invoice summary
+    invoice_total_taxable = extracted_data.get("total_taxable_value", 0.0)
+    invoice_total_cgst = extracted_data.get("cgst_amount", 0.0)
+    invoice_total_sgst = extracted_data.get("sgst_amount", 0.0)
+    
+    # If total taxable value extracted is zero, fallback to summing up the items to prevent division by zero
+    if invoice_total_taxable == 0.0:
+        invoice_total_taxable = sum(item.get("amount", 0.0) for item in line_items)
+
+    # Accumulators to perform clean decimal discrepancy adjustments on the final row
+    calculated_cgst_so_far = 0.0
+    calculated_sgst_so_far = 0.0
+    
+    # Process items using enumeration to know which row is the first/last one
+    for index, item in enumerate(line_items):
         item_amount = item.get("amount", 0.0)
-        try:
-            rate_num = float(item.get("gst_rate", "5").replace("%", "").strip())
-        except:
-            rate_num = 5.0
-            
-        row_cgst = round((item_amount * (rate_num / 100)) / 2, 2)
-        row_sgst = row_cgst
-        
-        # Header/footer totals should ONLY appear on the first row of the invoice block to match Accounting Invoice requirements
         is_first_row = (index == 0)
+        is_last_row = (index == total_items_count - 1)
         
+        # --- PROPORTIONAL TAX DISTRIBUTION WITH COMPONENT RETENTION ---
+        if invoice_total_taxable > 0:
+            # Determine this specific item row's exact percentage share of the invoice
+            item_share_ratio = item_amount / invoice_total_taxable
+            
+            if not is_last_row:
+                # Distribute tax proportionally down to 2 decimal places
+                row_cgst = round(invoice_total_cgst * item_share_ratio, 2)
+                row_sgst = round(invoice_total_sgst * item_share_ratio, 2)
+                
+                calculated_cgst_so_far += row_cgst
+                calculated_sgst_so_far += row_sgst
+            else:
+                # The final row absorbs any residual rounding decimals to match the absolute summary perfectly
+                row_cgst = round(invoice_total_cgst - calculated_cgst_so_far, 2)
+                row_sgst = round(invoice_total_sgst - calculated_sgst_so_far, 2)
+        else:
+            row_cgst = 0.0
+            row_sgst = 0.0
+
         row_entry = {
             "Voucher Type Name": "Purchase",
             "Voucher class": "GST",
@@ -92,7 +118,7 @@ def extract_and_convert_to_exact_tally_format(image_path: str, target_folder: st
             "Place of supplier": "Andhra Pradesh",
             "Buyer/Supplier - Pincode": extracted_data.get("supplier_pincode") if is_first_row else "",
             "Country": "India" if is_first_row else "",
-            "Mobile Number": extracted_data.get("supplier_mobile") if is_first_row else "",
+            "Mobile Number": subgroup_val if (subgroup_val := extracted_data.get("supplier_mobile")) and is_first_row else "",
             "Registration type": "Regular" if is_first_row else "",
             "GSTIN": extracted_data.get("gstin") if is_first_row else "",
             
@@ -126,11 +152,9 @@ def extract_and_convert_to_exact_tally_format(image_path: str, target_folder: st
     df_tally = pd.DataFrame(compiled_rows)
     
     # --- DYNAMIC FILENAME GENERATION ---
-    # Sanitize the invoice number so characters like '/' do not break file paths
     safe_invoice_no = re.sub(r'[\\/*?:"<>|]', '_', str(extracted_data.get("invoice_no", "UNKNOWN")))
     safe_ledger_name = re.sub(r'[\\/*?:"<>| ]', '_', str(extracted_data.get("party_ledger_name", "PARTY")))
     
-    # Constructing file name pattern: LedgerName_InvoiceNo.xlsx
     file_name = f"{safe_ledger_name}_{safe_invoice_no}.xlsx"
     output_excel_path = os.path.join(target_folder, file_name)
     
@@ -153,6 +177,5 @@ if __name__ == "__main__":
         
     input_image = "data/invoiceSample.jpeg" 
     
-    # Process function dynamically handles naming and folder assignment internal steps
     generated_path = extract_and_convert_to_exact_tally_format(input_image, TARGET_FOLDER)
     print(f"Final accounting file produced: {generated_path}")
