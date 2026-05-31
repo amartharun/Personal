@@ -168,8 +168,8 @@ def extract_and_convert_to_exact_tally_format(image_path: str, target_folder: st
 # 3. RUNTIME EXECUTION
 # =====================================================================
 if __name__ == "__main__":
-    os.environ["GEMINI_API_KEY"] = "AIzaSyAoqpWm2IeUAmxCQF2WGE4yv-qwvtpYfTo"
-    
+    os.environ["GEMINI_API_KEY"] = "YOUR_GEMINI_API_KEY_HERE"
+    # https://aistudio.google.com/api-keys?project=gen-lang-client-0524565325
     TARGET_FOLDER = "Tally_Uploads"
     if not os.path.exists(TARGET_FOLDER):
         os.makedirs(TARGET_FOLDER)
